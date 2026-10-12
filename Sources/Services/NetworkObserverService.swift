@@ -89,18 +89,31 @@ final internal class NetworkObserverService: NetworkObserverAPI, @unchecked Send
     }
     
     func refreshEndpoint() async {
+        await refreshEndpoint(force: false)
+    }
+
+    func refreshEndpoint(force: Bool) async {
         let manager = self.connectionManager
         verboseLog("[minimuxer] [net] refreshing interfaces list and peers")
         let ifacesChanged = await manager.refresh()
         
-        guard ifacesChanged else {
+        guard ifacesChanged || force else {
             return
+        }
+        if force && !ifacesChanged {
+            verboseLog("[minimuxer] [net] republishing unchanged endpoint state")
         }
         
         let connectionMode = await manager.getPreferredConnectionMode()
         switch connectionMode {
             case .notConfigured:
-                debugLog("[minimuxer] [net] connection mode not configured. skipping endpoint update...")
+                if force {
+                    debugLog("[minimuxer] [net] connection mode not configured. clearing published endpoint...")
+                    await self.endpoint.clear()
+                    self.proxyServer.notifyDeviceDetached()
+                } else {
+                    debugLog("[minimuxer] [net] connection mode not configured. skipping endpoint update...")
+                }
                 return
                 
             case .localVPN:

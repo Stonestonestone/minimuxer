@@ -345,6 +345,10 @@ final internal class MinimuxerImpl: MinimuxerAPI {
         }
         try await stop()
         try await start(pairingFile: pairingFile, mountPath: mountPath, preferred: preferred)
+        // A gateway restart can discard its endpoint even when the network
+        // snapshot itself has not changed. Republish the cached endpoint to the
+        // endpoint actor, gateway, and fake-usbmuxd device list as one operation.
+        await self.network.refreshEndpoint(force: true)
     }
 
     func restart() async throws(MinimuxerError) {
@@ -357,7 +361,6 @@ final internal class MinimuxerImpl: MinimuxerAPI {
             throw MinimuxerError.invalidPairing(protocol: activeProtocol, reason: "No existing pairing file found in gateway during restart")
         }
         try await restartWith(pairingFile: pairingFile, op: "restart")
-        await self.network.refreshEndpoint()
     }
 
     func reinitializePairingData(pairingFile: String) async throws(MinimuxerError) {
