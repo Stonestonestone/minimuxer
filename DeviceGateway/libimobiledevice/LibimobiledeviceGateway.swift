@@ -133,7 +133,9 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGatewayAPI,
 
     private func verifyInitialized() throws {
         guard isInitialized, cachedUDID != nil else {
-            throw LibimobiledeviceGatewayError(.notInitialized)
+            let reason = "Gateway state is incomplete (initialized=\(isInitialized), cachedUDIDPresent=\(cachedUDID != nil))"
+            debugLog("[LibimobiledeviceGateway] verifyInitialized failed: \(reason)")
+            throw LibimobiledeviceGatewayError(.notInitialized, reason: reason)
         }
     }
 
@@ -155,6 +157,7 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGatewayAPI,
         var client: rppairing_client_t? = nil
         let err = rppairing_client_new(host, port, MinimuxerConstants.appName, &client)
         guard err == RPPAIRING_E_SUCCESS, let client = client else {
+            debugLog("[LibimobiledeviceGateway] rppairing_client_new failed for \(host):\(port) with code: \(err.rawValue)")
             throw LibimobiledeviceGatewayError(.connectionFailed, reason: "rppairing_client_new failed to connect to \(host):\(port): code \(err.rawValue)")
         }
         defer { rppairing_client_free(client) }
@@ -389,6 +392,12 @@ public final class LibimobiledeviceGateway: BaseDeviceGateway, DeviceGatewayAPI,
                 throw LibimobiledeviceGatewayError(.invalidPairingFile, reason: "rppairing_identity_from_plist failed with code \(err.rawValue)")
             }
             self.rpIdentity = identity
+            if let udid = pairingFile.plist["UDID"] as? String, !udid.isEmpty {
+                self.cachedUDID = udid
+                debugLog("[LibimobiledeviceGateway] Restored cached device UDID from RPPairing file")
+            } else {
+                debugLog("[LibimobiledeviceGateway] RPPairing file does not contain a usable device UDID")
+            }
         } else if let lockdown = pairingFile as? LockdownPairingFile {
             let udid = lockdown.udid
             guard !udid.isEmpty else {
