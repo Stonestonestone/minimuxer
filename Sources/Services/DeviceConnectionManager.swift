@@ -110,17 +110,23 @@ actor DeviceConnectionManager {
                 let lastIsDerivedPeerIpReachable = isDerivedPeerIpReachable
                 let lastIsOverridePeerIpReachable = isOverridePeerIpReachable
                 // set new states
-                interfacesCache = NetworkIfaceScanner.scan(quiet: quietScan)
-                
-                let (resolvedTunnel, candidatePeer, isDerivedReachable) = await resolveLocalVPNTunnel(from: interfacesCache)
+                let rawOverrideIp = connectionConfigCache?.getOverrideTunnelPeerIp()
+                overridePeerIp = (rawOverrideIp?.isEmpty ?? true) ? nil : rawOverrideIp
+                // Full-tunnel VPNs can expose thousands of route entries. Avoid
+                // formatting that entire list when an explicit peer makes the
+                // route-derived candidates irrelevant.
+                interfacesCache = NetworkIfaceScanner.scan(quiet: quietScan || overridePeerIp != nil)
+
+                let (resolvedTunnel, candidatePeer, isDerivedReachable) = await resolveLocalVPNTunnel(
+                    from: interfacesCache,
+                    overridePeerIp: overridePeerIp
+                )
                 vpnIface = resolvedTunnel
                 reportedPeerIp = resolvedTunnel?.linkLayerDestinationIP?.v4?.host
                 derivedPeerIp = candidatePeer?.ip
                 derivedPeerSubnetMask = candidatePeer?.mask
                 isDerivedPeerIpReachable = isDerivedReachable
 
-                let rawOverrideIp = connectionConfigCache?.getOverrideTunnelPeerIp()
-                overridePeerIp = (rawOverrideIp?.isEmpty ?? true) ? nil : rawOverrideIp
                 isOverridePeerIpReachable = await tcpProbe(overridePeerIp)
             
                 let isOverrideIpUnchanged = lastOverrideIp == overridePeerIp
@@ -203,6 +209,15 @@ actor DeviceConnectionManager {
         let mask: String?
     }
 
+    enum PeerDiscoveryMode: Equatable {
+        case automatic
+        case override
+    }
+
+    static func resolvePeerDiscoveryMode(overridePeerIp: String?) -> PeerDiscoveryMode {
+        overridePeerIp == nil ? .automatic : .override
+    }
+
     static func resolveCandidateTunnels(from interfaces: Set<NetInfo>) -> [TunnelNetInfo] {
         interfaces
             .compactMap { $0 as? TunnelNetInfo }
@@ -217,9 +232,26 @@ actor DeviceConnectionManager {
         resolveCandidateTunnels(from: interfaces).flatMap { resolveCandidatePeers(for: $0) }
     }
 
-    private func resolveLocalVPNTunnel(from interfaces: Set<NetInfo>) async -> (tunnel: TunnelNetInfo?, candidatePeer: CandidatePeer?, isReachable: Bool) {
+    private func resolveLocalVPNTunnel(
+        from interfaces: Set<NetInfo>,
+        overridePeerIp: String?
+    ) async -> (tunnel: TunnelNetInfo?, candidatePeer: CandidatePeer?, isReachable: Bool) {
+        let tunnels = Self.resolveCandidateTunnels(from: interfaces)
+
+        // An explicit peer is authoritative. We only need an active utun to
+        // establish Local VPN mode; probing every route-derived destination is
+        // both unnecessary and potentially very expensive for full-tunnel VPNs.
+        // The override itself is probed separately by refresh().
+        switch Self.resolvePeerDiscoveryMode(overridePeerIp: overridePeerIp) {
+            case .override:
+                debugLog("[minimuxer] [iface] override peer configured; skipping derived peer probes")
+                return (tunnels.first, nil, false)
+            case .automatic:
+                break
+        }
+
         // pick all candidate peer ips
-        let candidates = Self.resolveCandidatePeers(from: interfaces)
+        let candidates = tunnels.flatMap { Self.resolveCandidatePeers(for: $0) }
         guard !candidates.isEmpty else { return (nil, nil, false) }
 
         // parallelized tcp service port probing on all candidate ips
